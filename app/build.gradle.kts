@@ -60,6 +60,10 @@ android {
         compose = true
         buildConfig = true
     }
+    // Don't compress ONNX model file in APK
+    androidResources {
+        noCompress += "onnx"
+    }
 }
 
 dependencies {
@@ -95,6 +99,9 @@ dependencies {
     implementation(libs.retrofit.gson)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
+
+    // ONNX Runtime for on-device embeddings
+    implementation(libs.onnxruntime.android)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -7,9 +7,13 @@ import androidx.navigation.compose.composable
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.PhoneAuthProvider
 import com.sohanreddy.sevak.data.PrefsManager
+import com.sohanreddy.sevak.data.rag.VectorStoreManager
 import com.sohanreddy.sevak.ui.auth.OtpScreen
 import com.sohanreddy.sevak.ui.auth.PhoneEntryScreen
 import com.sohanreddy.sevak.ui.main.MainScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 object Routes {
     const val PHONE = "phone"
@@ -61,6 +65,13 @@ fun SaathiNavGraph(
             MainScreen(
                 prefs = prefs,
                 onSignOut = {
+                    // Clean up RAG data for current user before signing out
+                    val uid = FirebaseAuth.getInstance().currentUser?.uid
+                    if (uid != null) {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            VectorStoreManager.deleteAllForUser(uid)
+                        }
+                    }
                     FirebaseAuth.getInstance().signOut()
                     prefs.clear()
                     navController.navigate(Routes.PHONE) {

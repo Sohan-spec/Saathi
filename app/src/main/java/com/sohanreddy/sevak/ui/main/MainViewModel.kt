@@ -5,10 +5,14 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseAuth
 import com.sohanreddy.sevak.audio.AudioHelper
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getLanguageByCode
 import com.sohanreddy.sevak.data.getLanguageBySarvamCode
+import com.sohanreddy.sevak.data.rag.ContextBuilder
+import com.sohanreddy.sevak.data.rag.EmbeddingManager
+import com.sohanreddy.sevak.data.rag.VectorStoreManager
 import com.sohanreddy.sevak.network.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,6 +25,7 @@ import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Locale
+import java.util.UUID
 
 enum class AssistantState { IDLE, LISTENING, PROCESSING, SPEAKING }
 
@@ -40,6 +45,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = PrefsManager(application)
     private var androidTts: TextToSpeech? = null
     private var ttsReady = false
+
+    // RAG session ID — unique per app session
+    private val sessionId: String = UUID.randomUUID().toString()
 
     // Silence detection
     private val silenceThreshold = 0.015f
@@ -192,13 +200,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             _state.value = _state.value.copy(detectedLangCode = resolvedLang.code)
 
-            // Call Groq LLM
+            // --- RAG PIPELINE: Retrieve context ---
+            val userId = FirebaseAuth.getInstance().currentUser?.uid ?: "anonymous"
+            var ragContext = ""
+            if (EmbeddingManager.isReady.value) {
+                try {
+                    Log.d("MainVM", "RAG: Retrieving context for query...")
+                    val relevantChunks = VectorStoreManager.retrieveAndRerank(userId, transcript)
+                    ragContext = ContextBuilder.buildContext(relevantChunks)
+                    Log.d("MainVM", "RAG: Got ${relevantChunks.size} chunks, context length: ${ragContext.length}")
+                } catch (e: Exception) {
+                    Log.e("MainVM", "RAG retrieval failed, proceeding without context: ${e.message}")
+                }
+            } else {
+                Log.d("MainVM", "RAG: EmbeddingManager not ready, skipping context retrieval")
+            }
+
+            // Call Groq LLM with RAG context
             val langName = resolvedLang.englishName
             Log.d("MainVM", "Calling Groq with transcript: $transcript, lang: $langName")
-            val responseText = callGroq(transcript, langName)
+            val responseText = callGroq(transcript, langName, ragContext)
             Log.d("MainVM", "Groq response: $responseText")
 
             _state.value = _state.value.copy(lastResponse = responseText)
+
+            // --- RAG PIPELINE: Store conversation turn ---
+            if (EmbeddingManager.isReady.value) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        VectorStoreManager.storeConversationTurn(userId, sessionId, transcript, responseText)
+                        Log.d("MainVM", "RAG: Stored conversation turn")
+                    } catch (e: Exception) {
+                        Log.e("MainVM", "RAG: Failed to store turn: ${e.message}")
+                    }
+                }
+            }
 
             // Call Sarvam TTS
             _state.value = _state.value.copy(assistantState = AssistantState.SPEAKING)
@@ -239,13 +275,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
     }
 
-    private suspend fun callGroq(transcript: String, langName: String): String {
+    private suspend fun callGroq(transcript: String, langName: String, ragContext: String = ""): String {
         return try {
-            val systemPrompt = """You are Vince, a helpful AI assistant for rural and semi-urban Indian users.
-The user speaks $langName. Always respond in $langName only.
-Use extremely simple words. Speak like a helpful neighbor, not a government form.
-Keep responses under 3 sentences. Be direct and actionable.
-If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English."""
+            val systemPrompt = buildString {
+                append("You are Saathi, a helpful AI assistant for rural and semi-urban Indian users.\n")
+                append("The user speaks $langName. Always respond in $langName only.\n")
+                append("Use extremely simple words. Speak like a helpful neighbor, not a government form.\n")
+                append("Keep responses under 3 sentences. Be direct and actionable.\n")
+                append("If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English.")
+                if (ragContext.isNotBlank()) {
+                    append("\n\nPrevious conversation context (use this to remember what the user told you):\n")
+                    append(ragContext)
+                }
+            }
 
             val request = GroqRequest(
                 messages = listOf(
