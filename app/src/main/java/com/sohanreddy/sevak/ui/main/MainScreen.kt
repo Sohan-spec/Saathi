@@ -4,36 +4,37 @@ import android.Manifest
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.sohanreddy.sevak.R
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getStatusText
 import com.sohanreddy.sevak.data.supportedLanguages
+import com.sohanreddy.sevak.ui.theme.SaathiColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,98 +64,108 @@ fun MainScreen(
         }
     }
 
-    val bgColor = Color(0xFF0A0A0F)
-    val textColor = Color(0xFFF5F5F5)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // ── Background image ────────────────────────────────────────
+        Image(
+            painter = painterResource(R.drawable.background),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
 
-    Box(
-        modifier = Modifier.fillMaxSize().background(bgColor)
-    ) {
-        // Settings icon top-right
+        // ── Settings icon — top right ───────────────────────────────
         IconButton(
             onClick = { showSheet = true },
-            modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(16.dp)
         ) {
-            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = textColor)
+            Icon(
+                Icons.Default.Settings,
+                contentDescription = "Settings",
+                tint = Color.White.copy(alpha = 0.75f),
+                modifier = Modifier.size(26.dp)
+            )
         }
 
+        // ── Waveform centred content ────────────────────────────────
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Mic button
-            Surface(
-                modifier = Modifier.size(120.dp).clickable {
-                    if (viewModel.hasAudioPermission()) {
-                        viewModel.onMicTap()
-                    } else {
-                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                },
-                shape = CircleShape,
-                color = when (state.assistantState) {
-                    AssistantState.IDLE -> Color(0xFF4CAF50)
-                    AssistantState.LISTENING -> Color(0xFFF44336)
-                    AssistantState.PROCESSING -> Color(0xFFFF9800)
-                    AssistantState.SPEAKING -> Color(0xFF2196F3)
-                }
+            // Clickable waveform area
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .padding(horizontal = 32.dp)
+                    .clickable {
+                        if (viewModel.hasAudioPermission()) {
+                            viewModel.onMicTap()
+                        } else {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                contentAlignment = Alignment.Center
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    when (state.assistantState) {
-                        AssistantState.IDLE -> Icon(Icons.Default.Mic, contentDescription = "Mic", tint = Color.White, modifier = Modifier.size(48.dp))
-                        AssistantState.LISTENING -> Icon(Icons.Default.Stop, contentDescription = "Stop", tint = Color.White, modifier = Modifier.size(48.dp))
-                        AssistantState.PROCESSING -> CircularProgressIndicator(color = Color.White, modifier = Modifier.size(48.dp), strokeWidth = 4.dp)
-                        AssistantState.SPEAKING -> Icon(Icons.Default.VolumeUp, contentDescription = "Speaking", tint = Color.White, modifier = Modifier.size(48.dp))
-                    }
-                }
+                WaveformCanvas(
+                    modifier = Modifier.fillMaxSize(),
+                    isActive = state.assistantState == AssistantState.LISTENING ||
+                            state.assistantState == AssistantState.SPEAKING,
+                    isStatic = state.assistantState == AssistantState.PROCESSING,
+                    amplitude = state.audioAmplitude
+                )
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
 
             // Status text
             Text(
                 text = getStatusText(state.assistantState.name, currentLangCode),
-                color = textColor,
-                fontSize = 18.sp
+                color = when (state.assistantState) {
+                    AssistantState.LISTENING -> Color(0xCC64A0FF)
+                    AssistantState.SPEAKING -> Color(0xCC64A0FF)
+                    else -> Color.White.copy(alpha = 0.45f)
+                },
+                fontSize = 13.sp,
+                letterSpacing = 1.5.sp,
+                fontWeight = FontWeight.Normal
             )
-
-            Spacer(Modifier.height(24.dp))
-
-            // Response area
-            if (state.lastResponse.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 32.dp)
-                        .heightIn(max = 200.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = state.lastResponse,
-                        color = textColor.copy(alpha = 0.8f),
-                        fontSize = 16.sp
-                    )
-                }
-            }
         }
 
-        // Settings bottom sheet
+        // ── Settings bottom sheet ───────────────────────────────────
         if (showSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showSheet = false },
                 sheetState = sheetState,
-                containerColor = Color(0xFF1A1A2E)
+                containerColor = Color(0xE60C1C41),
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                dragHandle = {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 12.dp, bottom = 8.dp)
+                            .width(40.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(SaathiColors.PrimaryBright.copy(alpha = 0.4f))
+                    )
+                }
             ) {
-                Column(modifier = Modifier.padding(24.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
                     Text(
                         "Change Language",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
+                        color = SaathiColors.TextPrimary,
                         modifier = Modifier.padding(bottom = 16.dp)
                     )
 
-                    // Language grid — 2 columns, 4 rows
+                    // Language grid — 2 columns
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -170,9 +181,15 @@ fun MainScreen(
                                         viewModel.setLanguageManually(lang.code, lang.englishName)
                                         showSheet = false
                                     },
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isSelected) Color(0xFF4CAF50) else Color(0xFF2A2A3E),
-                                tonalElevation = if (isSelected) 4.dp else 0.dp
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected)
+                                    SaathiColors.PrimaryBright.copy(alpha = 0.25f)
+                                else
+                                    Color.White.copy(alpha = 0.06f),
+                                border = if (isSelected)
+                                    androidx.compose.foundation.BorderStroke(1.dp, SaathiColors.PrimaryBright.copy(alpha = 0.5f))
+                                else
+                                    androidx.compose.foundation.BorderStroke(1.dp, SaathiColors.CardBorder)
                             ) {
                                 Column(
                                     modifier = Modifier.padding(vertical = 14.dp, horizontal = 12.dp),
@@ -182,13 +199,16 @@ fun MainScreen(
                                         text = lang.displayName,
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = Color.White,
+                                        color = if (isSelected) SaathiColors.PrimaryBright else Color.White,
                                         textAlign = TextAlign.Center
                                     )
                                     Text(
                                         text = lang.englishName,
                                         fontSize = 12.sp,
-                                        color = Color.White.copy(alpha = 0.6f),
+                                        color = if (isSelected)
+                                            SaathiColors.PrimaryBright.copy(alpha = 0.7f)
+                                        else
+                                            Color.White.copy(alpha = 0.4f),
                                         textAlign = TextAlign.Center
                                     )
                                 }
@@ -197,7 +217,7 @@ fun MainScreen(
                     }
 
                     Spacer(Modifier.height(16.dp))
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
                     Spacer(Modifier.height(8.dp))
 
                     Text(
@@ -210,7 +230,7 @@ fun MainScreen(
                             }
                             .padding(vertical = 16.dp),
                         fontSize = 18.sp,
-                        color = Color(0xFFEF5350)
+                        color = SaathiColors.Error
                     )
                     Spacer(Modifier.height(32.dp))
                 }

@@ -1,18 +1,39 @@
 package com.sohanreddy.sevak.ui.auth
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.firebase.auth.PhoneAuthProvider
+import com.sohanreddy.sevak.R
+import com.sohanreddy.sevak.ui.theme.SaathiColors
 import kotlinx.coroutines.delay
 
 @Composable
@@ -26,6 +47,7 @@ fun OtpScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val activity = context as android.app.Activity
+    val focusRequester = remember { FocusRequester() }
 
     // Countdown timer
     LaunchedEffect(state.canResend) {
@@ -43,52 +65,168 @@ fun OtpScreen(
         if (state.verified) onVerified()
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Enter OTP", style = MaterialTheme.typography.headlineMedium)
-        Text("Sent to +91 $phone", style = MaterialTheme.typography.bodyMedium)
-        Spacer(Modifier.height(24.dp))
+    // Auto-focus the OTP field
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
 
-        OutlinedTextField(
-            value = state.otp,
-            onValueChange = viewModel::onOtpChange,
-            label = { Text("6-digit OTP") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+    Box(modifier = Modifier.fillMaxSize()) {
+        // ── Background image ────────────────────────────────────────
+        Image(
+            painter = painterResource(R.drawable.background),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
         )
 
-        if (state.error != null) {
-            Text(state.error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Button(
-            onClick = { viewModel.verify(verificationId) },
-            enabled = !state.isLoading,
-            modifier = Modifier.fillMaxWidth()
+        // ── Foreground content ──────────────────────────────────────
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (state.isLoading) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
-            }
-            Text("Verify")
-        }
+            Spacer(Modifier.weight(0.25f))
 
-        Spacer(Modifier.height(16.dp))
-
-        if (state.canResend) {
-            Text(
-                "Resend OTP",
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { viewModel.resendOtp(activity, phone, resendToken) }
+            // Logo
+            Image(
+                painter = painterResource(R.drawable.saathi_logo),
+                contentDescription = "Saathi logo",
+                modifier = Modifier.size(80.dp)
             )
-        } else {
-            Text("Resend OTP in ${state.countdown}s", color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Spacer(Modifier.height(12.dp))
+
+            // App name
+            Text(
+                text = "saathi",
+                color = Color.White,
+                fontSize = 32.sp,
+                style = MaterialTheme.typography.headlineLarge
+            )
+
+            Spacer(Modifier.height(32.dp))
+
+            // Heading
+            Text(
+                text = "Enter OTP",
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "Sent to +91 $phone",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(Modifier.height(28.dp))
+
+            // ── OTP digit boxes ─────────────────────────────────────
+            BasicTextField(
+                value = state.otp,
+                onValueChange = viewModel::onOtpChange,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                cursorBrush = SolidColor(Color.Transparent),
+                textStyle = TextStyle(color = Color.Transparent),
+                modifier = Modifier
+                    .focusRequester(focusRequester)
+                    .fillMaxWidth(),
+                decorationBox = {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        repeat(6) { index ->
+                            val char = state.otp.getOrNull(index)?.toString() ?: ""
+                            val isFocused = state.otp.length == index
+
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(50.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.95f))
+                                    .then(
+                                        if (isFocused) Modifier.border(
+                                            2.dp,
+                                            SaathiColors.Primary,
+                                            RoundedCornerShape(14.dp)
+                                        ) else Modifier
+                                    )
+                            ) {
+                                Text(
+                                    text = char,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF333333),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+            )
+
+            // Error message
+            if (state.error != null) {
+                Text(
+                    state.error!!,
+                    color = SaathiColors.Error,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // ── Verify button ───────────────────────────────────────
+            IconButton(
+                onClick = { viewModel.verify(verificationId) },
+                enabled = !state.isLoading,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(SaathiColors.Primary)
+            ) {
+                if (state.isLoading) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Verify",
+                        tint = Color.White
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // Resend text
+            if (state.canResend) {
+                Text(
+                    "Resend OTP",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { viewModel.resendOtp(activity, phone, resendToken) }
+                )
+            } else {
+                Text(
+                    "Resend OTP in ${state.countdown}s",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 14.sp
+                )
+            }
+
+            Spacer(Modifier.weight(0.35f))
         }
     }
 }
