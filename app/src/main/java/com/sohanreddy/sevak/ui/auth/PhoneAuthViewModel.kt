@@ -22,7 +22,7 @@ data class PhoneAuthState(
 class PhoneAuthViewModel : ViewModel() {
     private val _state = MutableStateFlow(PhoneAuthState())
     val state = _state.asStateFlow()
-    private val auth = FirebaseAuth.getInstance()
+    private val auth = FirebaseAuth.getInstance().also { it.setLanguageCode("en") }
 
     fun onPhoneChange(phone: String) {
         _state.value = _state.value.copy(phone = phone.filter { it.isDigit() }.take(10), error = null)
