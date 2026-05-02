@@ -42,15 +42,17 @@ object EmbeddingManager {
     val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
 
     /**
-     * Initialize the ONNX model and tokenizer from assets.
-     * Call this on a background thread — model loading takes 1-2 seconds.
+     * Initialize the ONNX model and tokenizer.
+     * Tokenizer loads from assets, model loads from internal storage
+     * (downloaded by ModelDownloader on first launch).
+     * Call this on a background thread.
      */
-    fun init(context: Context) {
+    suspend fun init(context: Context) {
         try {
             Log.d(TAG, "Initializing ONNX model...")
             val startTime = System.currentTimeMillis()
 
-            // Load tokenizer vocabulary
+            // Load tokenizer vocabulary from assets (742KB — always bundled)
             val tokenizerJson = context.assets.open(TOKENIZER_FILE)
                 .bufferedReader().use { it.readText() }
             val tokenizer = JSONObject(tokenizerJson)
@@ -66,10 +68,16 @@ object EmbeddingManager {
             vocab = vocabMap
             Log.d(TAG, "Loaded vocabulary: ${vocab.size} tokens")
 
-            // Load ONNX model
+            // Download model if needed, then load from internal storage
+            val modelFile = ModelDownloader.ensureModelDownloaded(context)
+            if (modelFile == null) {
+                Log.e(TAG, "Model file not available — download may have failed")
+                _isReady.value = false
+                return
+            }
+
             ortEnvironment = OrtEnvironment.getEnvironment()
-            val modelBytes = context.assets.open(MODEL_FILE).use { it.readBytes() }
-            ortSession = ortEnvironment!!.createSession(modelBytes)
+            ortSession = ortEnvironment!!.createSession(modelFile.absolutePath)
             Log.d(TAG, "ONNX model loaded in ${System.currentTimeMillis() - startTime}ms")
 
             _isReady.value = true

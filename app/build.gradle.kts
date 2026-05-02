@@ -20,6 +20,11 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Only include arm64 native libs — keeps APK small for physical devices
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
         val fileBackedKeys = mutableMapOf<String, String>()
         listOf(".env", "local.properties").forEach { fileName ->
             val file = rootProject.file(fileName)

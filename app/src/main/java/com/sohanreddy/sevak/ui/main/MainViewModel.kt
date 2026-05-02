@@ -1,6 +1,7 @@
 package com.sohanreddy.sevak.ui.main
 
 import android.app.Application
+import android.content.Intent
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -15,6 +16,10 @@ import com.sohanreddy.sevak.data.rag.ContextBuilder
 import com.sohanreddy.sevak.data.rag.EmbeddingManager
 import com.sohanreddy.sevak.data.rag.VectorStoreManager
 import com.sohanreddy.sevak.network.*
+import com.sohanreddy.sevak.screen.ImageEncoder
+import com.sohanreddy.sevak.screen.ScreenCaptureManager
+import com.sohanreddy.sevak.screen.ScreenCaptureService
+import com.sohanreddy.sevak.screen.ScreenQueryRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,6 +33,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 enum class AssistantState { IDLE, LISTENING, PROCESSING, SPEAKING }
 
@@ -36,7 +42,8 @@ data class MainScreenState(
     val lastResponse: String = "",
     val error: String? = null,
     val detectedLangCode: String? = null,
-    val audioAmplitude: Float = 0f
+    val audioAmplitude: Float = 0f,
+    val screenModeActive: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -51,38 +58,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // RAG session ID — unique per app session
     private val sessionId: String = UUID.randomUUID().toString()
 
-    // Silence detection
-    private val silenceThreshold = 0.015f
+    // Voice activity + turn-end detection tuned for noisy mobile mic input
     private val silenceTimeoutMs = 1500L
-    // Voice activity + turn-end detection tuned for noisy mobile mic input.
-    private val silenceTimeoutMs = 1400L
     private val noSpeechTimeoutMs = 5000L
     private val maxListeningDurationMs = 12000L
-    private var silenceJob: Job? = null
     private var restartListeningJob: Job? = null
     private var processingJob: Job? = null
     private var listeningStartedAt = 0L
-    private var lastSpeechTimestamp = 0L
-    private var hasDetectedSpeech = false
-    private var ambientNoiseFloor = 0.008f
-    private var liveModeEnabled = false
+    @Volatile private var lastSpeechTimestamp = 0L
+    @Volatile private var hasDetectedSpeech = false
+    @Volatile private var ambientNoiseFloor = 0.008f
+    @Volatile private var liveModeEnabled = false
+
+    // Atomic flag to prevent multiple simultaneous stopListeningAndProcess calls
+    // from the recording thread (amplitude callback fires frequently)
+    private val processingTriggered = AtomicBoolean(false)
 
     init {
         androidTts = TextToSpeech(application) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
         }
 
-        // Wire up amplitude callback
+        // Wire up amplitude callback — THIS RUNS ON THE RECORDING THREAD
+        // Silence detection is done directly here so it works even when the
+        // app is backgrounded (main dispatcher gets throttled in background).
         audioHelper.onAmplitudeUpdate = { rawAmplitude ->
             val amplitude = rawAmplitude.coerceIn(0f, 1f)
 
             // Boost visual motion so low-volume speech still animates clearly.
             _state.update { it.copy(audioAmplitude = (amplitude * 3.2f).coerceIn(0f, 1f)) }
 
-            // Adaptive VAD to avoid treating ambient hiss as speech forever.
+            // Only run VAD when actively listening
             if (_state.value.assistantState == AssistantState.LISTENING) {
                 val now = System.currentTimeMillis()
+                val listeningFor = now - listeningStartedAt
 
+                // Noise floor adaptation (only before speech detected)
                 if (!hasDetectedSpeech) {
                     ambientNoiseFloor = (ambientNoiseFloor * 0.9f) + (amplitude * 0.1f)
                 }
@@ -103,6 +114,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ambientNoiseFloor = (ambientNoiseFloor * 0.96f) + (amplitude * 0.04f)
                     }
                 }
+
+                // ── SILENCE DETECTION — runs on recording thread, works in background ──
+                // Skip during warm-up period (first 500ms)
+                if (listeningFor > 500) {
+                    if (hasDetectedSpeech) {
+                        val silenceFor = now - lastSpeechTimestamp
+                        if (silenceFor >= silenceTimeoutMs) {
+                            // Silence after speech → process audio
+                            if (processingTriggered.compareAndSet(false, true)) {
+                                Log.d("MainVM", "BG: Turn ended by silence (${silenceFor}ms)")
+                                viewModelScope.launch(Dispatchers.Main.immediate) {
+                                    stopListeningAndProcess()
+                                }
+                            }
+                        }
+                    } else if (listeningFor >= noSpeechTimeoutMs) {
+                        // No speech detected at all → restart listening
+                        if (processingTriggered.compareAndSet(false, true)) {
+                            Log.d("MainVM", "BG: No speech detected in ${listeningFor}ms")
+                            viewModelScope.launch(Dispatchers.Main.immediate) {
+                                stopListeningWithoutProcessing("no-speech-timeout")
+                            }
+                        }
+                    }
+
+                    // Hard max duration
+                    if (listeningFor >= maxListeningDurationMs) {
+                        if (processingTriggered.compareAndSet(false, true)) {
+                            Log.d("MainVM", "BG: Max listen duration reached (${listeningFor}ms)")
+                            viewModelScope.launch(Dispatchers.Main.immediate) {
+                                stopListeningAndProcess()
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -114,6 +160,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.saveLanguage(code, name)
         Log.d("MainVM", "Language manually set to $code ($name)")
     }
+
+    // ── Screen Mode ─────────────────────────────────────────────────
+
+    /**
+     * Activate screen mode: start the foreground service and enable screen capture.
+     * Called from MainScreen after the user grants MediaProjection permission.
+     * Waits 2 seconds so user can switch to the target app, then starts listening.
+     */
+    fun activateScreenMode(resultCode: Int, data: Intent) {
+        Log.d("MainVM", "activateScreenMode called, resultCode=$resultCode")
+        val context = getApplication<Application>()
+        try {
+            val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
+                putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+                putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+            }
+            context.startForegroundService(serviceIntent)
+            Log.d("MainVM", "✓ Foreground service start requested")
+        } catch (e: Exception) {
+            Log.e("MainVM", "✗ Failed to start foreground service: ${e.message}", e)
+            return
+        }
+
+        _state.update { it.copy(screenModeActive = true) }
+        Log.d("MainVM", "Screen mode activated — waiting 2s for user to switch apps")
+
+        // Auto-start live listening
+        if (!liveModeEnabled) {
+            liveModeEnabled = true
+            Log.d("MainVM", "Auto-enabling live mode for screen capture")
+        }
+
+        // Wait 2 seconds so user can switch to target app, then start listening
+        viewModelScope.launch {
+            delay(2000)
+            Log.d("MainVM", "2s delay done. CaptureReady=${ScreenCaptureManager.isReady()}, state=${_state.value.assistantState}")
+            if (_state.value.assistantState == AssistantState.IDLE && audioHelper.hasPermission()) {
+                Log.d("MainVM", "Starting to listen...")
+                startListening()
+            } else {
+                Log.w("MainVM", "Cannot start listening: state=${_state.value.assistantState}, audioPerm=${audioHelper.hasPermission()}")
+            }
+        }
+    }
+
+    /** Deactivate screen mode and stop the foreground service. */
+    fun deactivateScreenMode() {
+        val context = getApplication<Application>()
+        context.stopService(Intent(context, ScreenCaptureService::class.java))
+        _state.update { it.copy(screenModeActive = false) }
+        Log.d("MainVM", "Screen mode deactivated")
+    }
+
+    // ── Mic / Live Mode ─────────────────────────────────────────────
 
     fun onMicTap() {
         if (!liveModeEnabled) {
@@ -131,7 +231,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun stopLiveMode() {
         liveModeEnabled = false
-        silenceJob?.cancel()
         restartListeningJob?.cancel()
         processingJob?.cancel()
 
@@ -173,42 +272,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lastSpeechTimestamp = now
         hasDetectedSpeech = false
         ambientNoiseFloor = 0.008f
+        processingTriggered.set(false) // Reset so amplitude callback can trigger processing
         audioHelper.startRecording()
-
-        // Start silence monitoring
-        silenceJob?.cancel()
-        silenceJob = viewModelScope.launch {
-            // Small warm-up period to collect a stable noise floor.
-            delay(500)
-            while (_state.value.assistantState == AssistantState.LISTENING) {
-                val nowTick = System.currentTimeMillis()
-                val listeningFor = nowTick - listeningStartedAt
-
-                if (hasDetectedSpeech) {
-                    val silenceFor = nowTick - lastSpeechTimestamp
-                    if (silenceFor >= silenceTimeoutMs) {
-                        Log.d("MainVM", "Turn ended by silence (${silenceFor}ms)")
-                        stopListeningAndProcess()
-                        break
-                    }
-                } else if (listeningFor >= noSpeechTimeoutMs) {
-                    Log.d("MainVM", "No speech detected in ${listeningFor}ms, restarting listen loop")
-                    stopListeningWithoutProcessing("no-speech-timeout")
-                    break
-                }
-
-                if (listeningFor >= maxListeningDurationMs) {
-                    Log.d("MainVM", "Max listen duration reached (${listeningFor}ms), processing current audio")
-                    stopListeningAndProcess()
-                    break
-                }
-                delay(100)
-            }
-        }
+        // Silence detection is handled in the amplitude callback — no coroutine needed.
+        // This works even when the app is in the background.
     }
 
     private fun stopListeningWithoutProcessing(reason: String) {
-        silenceJob?.cancel()
         Log.d("MainVM", "Stopping recording without processing: $reason")
         audioHelper.cancelRecording()
         _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
@@ -216,7 +286,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopListeningAndProcess() {
-        silenceJob?.cancel()
         Log.d("MainVM", "Stopping recording...")
         _state.value = _state.value.copy(assistantState = AssistantState.PROCESSING, audioAmplitude = 0f)
         val wavFile = audioHelper.stopRecording()
@@ -245,7 +314,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             // Determine language code to send to STT
-            // If user has a saved language, use it; otherwise send "unknown" for auto-detect
             val savedLangCode = prefs.getLanguageCode()
             val savedLang = savedLangCode?.let { getLanguageByCode(it) }
             val sttLangCode = savedLang?.sarvamCode ?: "unknown"
@@ -287,32 +355,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             // Resolve the language to use for LLM + TTS
-            // Priority: detected language from STT > saved language > default hi-IN
             val resolvedSarvamCode: String
             val resolvedLang: com.sohanreddy.sevak.data.Language
 
             if (savedLang != null) {
-                // User has explicitly chosen a language, use it
                 resolvedSarvamCode = savedLang.sarvamCode
                 resolvedLang = savedLang
             } else if (!detectedSarvamCode.isNullOrBlank()) {
-                // Auto-detected from STT — save it for future use
                 val detected = getLanguageBySarvamCode(detectedSarvamCode)
                 if (detected != null) {
                     resolvedSarvamCode = detected.sarvamCode
                     resolvedLang = detected
-                    // Persist detected language
                     prefs.saveLanguage(detected.code, detected.englishName)
                     Log.d("MainVM", "Auto-detected and saved language: ${detected.code} (${detected.englishName})")
                 } else {
-                    // Detected a language we don't support — default to Hindi
                     resolvedSarvamCode = "hi-IN"
                     resolvedLang = getLanguageBySarvamCode("hi-IN")!!
                     prefs.saveLanguage("hi", "Hindi")
                     Log.d("MainVM", "Unsupported detected language $detectedSarvamCode, defaulting to hi-IN")
                 }
             } else {
-                // Nothing detected, default to Hindi
                 resolvedSarvamCode = "hi-IN"
                 resolvedLang = getLanguageBySarvamCode("hi-IN")!!
                 prefs.saveLanguage("hi", "Hindi")
@@ -337,12 +399,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.d("MainVM", "RAG: EmbeddingManager not ready, skipping context retrieval")
             }
 
-            // Call Groq LLM with RAG context
+            // --- Call LLM: screen mode vs normal mode ---
             val langName = resolvedLang.englishName
-            Log.d("MainVM", "Calling Groq with transcript: $transcript, lang: $langName")
-            val responseText = callGroq(transcript, langName, ragContext)
-            Log.d("MainVM", "Groq response: $responseText")
+            val isScreenMode = _state.value.screenModeActive && ScreenCaptureManager.isReady()
+            val responseText: String
 
+            if (isScreenMode) {
+                // Screen mode: capture screenshot, encode, send to vision model
+                Log.d("MainVM", "══════ SCREEN MODE PIPELINE ══════")
+                Log.d("MainVM", "ScreenCaptureManager.isReady() = ${ScreenCaptureManager.isReady()}")
+                Log.d("MainVM", "Capturing screenshot now...")
+
+                val bitmap = ScreenCaptureManager.captureScreen()
+
+                if (bitmap != null) {
+                    Log.d("MainVM", "✓ Screenshot captured: ${bitmap.width}x${bitmap.height}")
+                    val base64Image = ImageEncoder.encode(bitmap)
+                    Log.d("MainVM", "✓ Screenshot encoded to base64, length: ${base64Image.length} chars")
+                    Log.d("MainVM", "Sending vision query to Groq (model: llama-4-scout)...")
+                    responseText = ScreenQueryRepository.queryWithScreenContext(
+                        transcript = transcript,
+                        base64Image = base64Image,
+                        langName = langName,
+                        ragContext = ragContext
+                    )
+                    Log.d("MainVM", "✓ Vision response received: ${responseText.take(100)}...")
+                    bitmap.recycle()
+                } else {
+                    Log.w("MainVM", "✗ Screenshot capture FAILED, falling back to text-only")
+                    responseText = callGroq(transcript, langName, ragContext)
+                }
+                Log.d("MainVM", "══════ END SCREEN MODE ══════")
+            } else {
+                // Normal mode: text-only Groq call
+                Log.d("MainVM", "Normal mode: Calling Groq with transcript: $transcript, lang: $langName")
+                responseText = callGroq(transcript, langName, ragContext)
+            }
+
+            Log.d("MainVM", "LLM response: $responseText")
             _state.value = _state.value.copy(lastResponse = responseText)
 
             // --- RAG PIPELINE: Store conversation turn ---
@@ -458,12 +552,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        silenceJob?.cancel()
         restartListeningJob?.cancel()
         processingJob?.cancel()
         audioHelper.cancelRecording()
         audioHelper.stopPlayback()
         androidTts?.shutdown()
+        // Clean up screen mode if active
+        if (_state.value.screenModeActive) {
+            deactivateScreenMode()
+        }
         super.onCleared()
     }
 }

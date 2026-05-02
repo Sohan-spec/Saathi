@@ -27,13 +27,20 @@ interface GroqApiService {
         @Header("Authorization") auth: String,
         @Body request: GroqRequest
     ): GroqResponse
+
+    // Vision requests need array-type content blocks — use raw Map body
+    @POST("openai/v1/chat/completions")
+    suspend fun chatRaw(
+        @Header("Authorization") auth: String,
+        @Body body: Map<String, @JvmSuppressWildcards Any>
+    ): Map<String, @JvmSuppressWildcards Any>
 }
 
 object GroqApi {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.HEADERS })
         .build()
 
     val service: GroqApiService = Retrofit.Builder()
