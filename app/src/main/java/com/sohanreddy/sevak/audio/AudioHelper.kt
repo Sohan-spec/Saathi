@@ -74,7 +74,11 @@ class AudioHelper(private val context: Context) {
     fun stopRecording(): File? {
         isRecording = false
         recordingThread?.join(2000)
-        audioRecord?.stop()
+        try {
+            audioRecord?.stop()
+        } catch (_: IllegalStateException) {
+            // Ignore race when recorder is already stopped.
+        }
         audioRecord?.release()
         audioRecord = null
 
@@ -84,6 +88,20 @@ class AudioHelper(private val context: Context) {
         val wavFile = File(context.cacheDir, "recording.wav")
         writeWav(wavFile, pcmData)
         return wavFile
+    }
+
+    fun cancelRecording() {
+        if (!isRecording) return
+        isRecording = false
+        recordingThread?.join(1000)
+        try {
+            audioRecord?.stop()
+        } catch (_: IllegalStateException) {
+            // Ignore race when recorder is already stopped.
+        }
+        audioRecord?.release()
+        audioRecord = null
+        rawData.reset()
     }
 
     private fun writeWav(file: File, pcmData: ByteArray) {

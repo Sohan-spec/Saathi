@@ -14,28 +14,42 @@ android {
 
     defaultConfig {
         applicationId = "com.sohanreddy.sevak"
-    minSdk = 26
-    targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
-    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    val envFile = rootProject.file(".env")
-    val envMap = mutableMapOf<String, String>()
-    if (envFile.exists()) {
-        envFile.readLines().forEach { line ->
-            val trimmed = line.trim()
-            if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
-                val (key, value) = trimmed.split("=", limit = 2)
-                envMap[key.trim()] = value.trim().removeSurrounding("\"")
+        val fileBackedKeys = mutableMapOf<String, String>()
+        listOf(".env", "local.properties").forEach { fileName ->
+            val file = rootProject.file(fileName)
+            if (file.exists()) {
+                file.readLines().forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                        val (key, value) = trimmed.split("=", limit = 2)
+                        if (!fileBackedKeys.containsKey(key.trim())) {
+                            fileBackedKeys[key.trim()] = value.trim().removeSurrounding("\"")
+                        }
+                    }
+                }
             }
         }
-    }
-    val groqKey = envMap["GROQ_API_KEY"] ?: ""
-    val sarvamKey = envMap["SARVAM_API_KEY"] ?: ""
 
-    buildConfigField("String", "GROQ_API_KEY", "\"$groqKey\"")
-    buildConfigField("String", "SARVAM_API_KEY", "\"$sarvamKey\"")
+        fun resolveSecret(name: String): String {
+            return (
+                (project.findProperty(name) as? String)
+                    ?: System.getenv(name)
+                    ?: fileBackedKeys[name]
+                    ?: ""
+                ).trim().removeSurrounding("\"")
+        }
+
+        val groqKey = resolveSecret("GROQ_API_KEY")
+        val sarvamKey = resolveSecret("SARVAM_API_KEY")
+
+        buildConfigField("String", "GROQ_API_KEY", "\"$groqKey\"")
+        buildConfigField("String", "SARVAM_API_KEY", "\"$sarvamKey\"")
     }
 
     buildTypes {

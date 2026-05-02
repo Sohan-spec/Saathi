@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +47,7 @@ fun MainScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState()
     var showSheet by remember { mutableStateOf(false) }
+    val waveformInteraction = remember { MutableInteractionSource() }
     val context = LocalContext.current
 
     // Use detected language from state, or saved language from prefs, or default to "en"
@@ -102,9 +104,11 @@ fun MainScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp)
-                    .padding(horizontal = 32.dp)
-                    .clickable {
+                    .height(170.dp)
+                    .clickable(
+                        interactionSource = waveformInteraction,
+                        indication = null
+                    ) {
                         if (viewModel.hasAudioPermission()) {
                             viewModel.onMicTap()
                         } else {
