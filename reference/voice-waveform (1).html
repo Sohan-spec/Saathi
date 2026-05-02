@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Assistant</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #050d1f;
+    --card-bg: rgba(12, 28, 65, 0.6);
+    --card-border: rgba(80, 130, 220, 0.18);
+    --text-primary: rgba(200, 215, 240, 0.9);
+    --text-dim: rgba(140, 165, 210, 0.55);
+    --accent: #4a8fff;
+    --glow: #2060ff;
+    --mic-bg: #ffffff;
+    --mic-icon: #0a1530;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Syne', sans-serif;
+    overflow: hidden;
+  }
+
+  /* Ambient background glow */
+  body::before {
+    content: '';
+    position: fixed;
+    bottom: -10%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 70vw;
+    height: 40vh;
+    background: radial-gradient(ellipse at center, rgba(30, 80, 255, 0.22) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  body::after {
+    content: '';
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40vw;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, rgba(80, 150, 255, 0.5), transparent);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .card {
+    position: relative;
+    z-index: 1;
+    width: min(420px, 90vw);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 28px;
+    padding: 32px 32px 40px;
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.04) inset,
+      0 32px 80px rgba(0,0,20,0.6),
+      0 0 60px rgba(20, 60, 180, 0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  /* White top-edge highlight */
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 10%; right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+    border-radius: 50%;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .transcript {
+    font-size: 1.35rem;
+    font-weight: 400;
+    line-height: 1.55;
+    color: var(--text-dim);
+    flex: 1;
+    letter-spacing: -0.01em;
+  }
+
+  .transcript strong {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .close-btn {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(200,215,240,0.7);
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+    line-height: 1;
+  }
+  .close-btn:hover { background: rgba(255,255,255,0.14); }
+
+  /* Waveform canvas area */
+  .waveform-wrap {
+    position: relative;
+    height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  canvas#waveform {
+    width: 100%;
+    height: 100%;
+    display: block;
+    filter: drop-shadow(0 0 10px rgba(80, 140, 255, 0.5));
+  }
+
+  /* Mic button */
+  .mic-area {
+    display: flex;
+    justify-content: center;
+  }
+
+  .mic-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: var(--mic-bg);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow:
+      0 0 0 0 rgba(255,255,255,0.25),
+      0 8px 24px rgba(0,0,0,0.4);
+    transition: transform 0.15s, box-shadow 0.15s;
+    position: relative;
+  }
+  .mic-btn:hover { transform: scale(1.05); }
+  .mic-btn:active { transform: scale(0.97); }
+
+  .mic-btn.listening {
+    animation: pulse-ring 1.6s ease-out infinite;
+  }
+
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.3), 0 8px 24px rgba(0,0,0,0.4); }
+    70%  { box-shadow: 0 0 0 18px rgba(255,255,255,0), 0 8px 24px rgba(0,0,0,0.4); }
+    100% { box-shadow: 0 0 0 0 rgba(255,255,255,0), 0 8px 24px rgba(0,0,0,0.4); }
+  }
+
+  .mic-icon {
+    width: 26px;
+    height: 26px;
+    color: var(--mic-icon);
+  }
+
+  .status {
+    text-align: center;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-top: -12px;
+  }
+  .status.active { color: rgba(100, 160, 255, 0.8); }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="card-header">
+    <p class="transcript" id="transcript">
+      Tap the mic and <strong>start speaking&nbsp;…</strong>
+    </p>
+    <button class="close-btn" onclick="stopListening()" title="Close">✕</button>
+  </div>
+
+  <div class="waveform-wrap">
+    <canvas id="waveform"></canvas>
+  </div>
+
+  <div class="mic-area">
+    <button class="mic-btn" id="micBtn" onclick="toggleListening()" title="Hold to speak">
+      <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="12" rx="3"/>
+        <path d="M5 10a7 7 0 0 0 14 0"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="9" y1="22" x2="15" y2="22"/>
+      </svg>
+    </button>
+  </div>
+  <p class="status" id="status">tap to listen</p>
+</div>
+
+<script>
+const canvas = document.getElementById('waveform');
+const ctx = canvas.getContext('2d');
+const micBtn = document.getElementById('micBtn');
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+
+let animId, analyser, dataArray, source, audioCtx, stream;
+let isListening = false;
+let phase = 0;
+
+// Hi-DPI canvas
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+}
+
+window.addEventListener('resize', () => { resizeCanvas(); });
+resizeCanvas();
+
+// ── Idle ambient animation ──────────────────────────────────────────
+function drawIdle() {
+  const W = canvas.width / (window.devicePixelRatio || 1);
+  const H = canvas.height / (window.devicePixelRatio || 1);
+  ctx.clearRect(0, 0, W, H);
+
+  const t = Date.now() * 0.001;
+  const lines = [
+    { amp: 6,  freq: 1.8, offset: 0,      color: 'rgba(255,255,255,0.18)', width: 1.5 },
+    { amp: 10, freq: 1.4, offset: 0.8,    color: 'rgba(80,160,255,0.35)',  width: 1.8 },
+    { amp: 14, freq: 1.1, offset: 1.6,    color: 'rgba(100,180,255,0.55)', width: 2   },
+    { amp: 10, freq: 1.4, offset: 2.4,    color: 'rgba(80,160,255,0.35)',  width: 1.8 },
+    { amp: 6,  freq: 1.8, offset: 3.2,    color: 'rgba(255,255,255,0.18)', width: 1.5 },
+  ];
+
+  lines.forEach(l => {
+    ctx.beginPath();
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = l.width;
+    for (let x = 0; x <= W; x++) {
+      const norm = x / W;
+      const envelope = Math.sin(norm * Math.PI); // fade at edges
+      const y = H / 2 + Math.sin(norm * Math.PI * 2 * l.freq + t * 1.2 + l.offset) * l.amp * envelope;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  });
+
+  animId = requestAnimationFrame(drawIdle);
+}
+
+// ── Live audio waveform ─────────────────────────────────────────────
+let smoothedRms = 0;
+let livePhase = 0;
+
+function drawLive() {
+  const W = canvas.width / (window.devicePixelRatio || 1);
+  const H = canvas.height / (window.devicePixelRatio || 1);
+  ctx.clearRect(0, 0, W, H);
+
+  analyser.getByteFrequencyData(dataArray);
+
+  // Compute RMS from frequency domain (much more stable than time-domain)
+  let sum = 0;
+  for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+  const avg = sum / dataArray.length / 255;
+
+  // Smooth it heavily so there's no jitter
+  smoothedRms += (avg - smoothedRms) * 0.08;
+  const amp = smoothedRms * 3.5;
+
+  livePhase += 0.04;
+
+  const t = livePhase;
+  const lines = [
+    { amp: amp * 0.4,  freq: 1.8, offset: 0,   color: 'rgba(255,255,255,0.18)', width: 1.5 },
+    { amp: amp * 0.65, freq: 1.4, offset: 0.8,  color: 'rgba(80,160,255,0.38)',  width: 1.8 },
+    { amp: amp * 1.0,  freq: 1.1, offset: 1.6,  color: 'rgba(120,190,255,0.72)', width: 2.2 },
+    { amp: amp * 0.65, freq: 1.4, offset: 2.4,  color: 'rgba(80,160,255,0.38)',  width: 1.8 },
+    { amp: amp * 0.4,  freq: 1.8, offset: 3.2,  color: 'rgba(255,255,255,0.18)', width: 1.5 },
+  ];
+
+  lines.forEach(l => {
+    ctx.beginPath();
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = l.width;
+    for (let x = 0; x <= W; x++) {
+      const norm = x / W;
+      const envelope = Math.sin(norm * Math.PI);
+      const y = H / 2 + Math.sin(norm * Math.PI * 2 * l.freq + t * 1.8 + l.offset) * l.amp * H * envelope;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  });
+
+  animId = requestAnimationFrame(drawLive);
+}
+
+// ── Controls ────────────────────────────────────────────────────────
+async function toggleListening() {
+  if (isListening) { stopListening(); return; }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.85;
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    smoothedRms = 0;
+    source = audioCtx.createMediaStreamSource(stream);
+    source.connect(analyser);
+
+    isListening = true;
+    micBtn.classList.add('listening');
+    statusEl.textContent = 'listening…';
+    statusEl.classList.add('active');
+    transcriptEl.innerHTML = 'I\'m listening, go ahead <strong>speak&nbsp;…</strong>';
+
+    cancelAnimationFrame(animId);
+    drawLive();
+  } catch (e) {
+    statusEl.textContent = 'microphone access denied';
+    console.warn(e);
+  }
+}
+
+function stopListening() {
+  if (!isListening && !audioCtx) { return; }
+  isListening = false;
+  micBtn.classList.remove('listening');
+  statusEl.textContent = 'tap to listen';
+  statusEl.classList.remove('active');
+  transcriptEl.innerHTML = 'Tap the mic and <strong>start speaking&nbsp;…</strong>';
+
+  cancelAnimationFrame(animId);
+  if (source) { source.disconnect(); source = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+
+  drawIdle();
+}
+
+// Start with idle
+drawIdle();
+</script>
+</body>
+</html>
