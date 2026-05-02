@@ -9,13 +9,11 @@ import com.google.firebase.auth.PhoneAuthProvider
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.ui.auth.OtpScreen
 import com.sohanreddy.sevak.ui.auth.PhoneEntryScreen
-import com.sohanreddy.sevak.ui.language.LanguagePickerScreen
 import com.sohanreddy.sevak.ui.main.MainScreen
 
 object Routes {
     const val PHONE = "phone"
     const val OTP = "otp"
-    const val LANGUAGE = "language"
     const val MAIN = "main"
 }
 
@@ -24,13 +22,9 @@ fun SaathiNavGraph(
     navController: NavHostController,
     prefs: PrefsManager
 ) {
-    // Determine start destination
+    // Determine start destination — skip language picker entirely
     val currentUser = FirebaseAuth.getInstance().currentUser
-    val startDest = when {
-        currentUser == null -> Routes.PHONE
-        prefs.getLanguageCode() == null -> Routes.LANGUAGE
-        else -> Routes.MAIN
-    }
+    val startDest = if (currentUser == null) Routes.PHONE else Routes.MAIN
 
     // Shared state for passing OTP data between screens
     var verificationId by remember { mutableStateOf("") }
@@ -55,23 +49,7 @@ fun SaathiNavGraph(
                 phone = phoneNumber,
                 resendToken = resendToken,
                 onVerified = {
-                    if (prefs.getLanguageCode() != null) {
-                        navController.navigate(Routes.MAIN) {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    } else {
-                        navController.navigate(Routes.LANGUAGE) {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    }
-                }
-            )
-        }
-
-        composable(Routes.LANGUAGE) {
-            LanguagePickerScreen(
-                onLanguageSelected = { code, name ->
-                    prefs.saveLanguage(code, name)
+                    // Go straight to main screen after auth — no language picker
                     navController.navigate(Routes.MAIN) {
                         popUpTo(0) { inclusive = true }
                     }
@@ -80,12 +58,8 @@ fun SaathiNavGraph(
         }
 
         composable(Routes.MAIN) {
-            val langCode = prefs.getLanguageCode() ?: "en"
             MainScreen(
-                langCode = langCode,
-                onChangeLanguage = {
-                    navController.navigate(Routes.LANGUAGE)
-                },
+                prefs = prefs,
                 onSignOut = {
                     FirebaseAuth.getInstance().signOut()
                     prefs.clear()

@@ -20,6 +20,10 @@ val supportedLanguages = listOf(
 
 fun getLanguageByCode(code: String): Language? = supportedLanguages.find { it.code == code }
 
+/** Resolve a Sarvam language_code (e.g. "hi-IN") to our Language model */
+fun getLanguageBySarvamCode(sarvamCode: String): Language? =
+    supportedLanguages.find { it.sarvamCode == sarvamCode }
+
 fun getStatusText(state: String, langCode: String): String {
     return when (langCode) {
         "hi" -> when (state) { "IDLE" -> "बोलने के लिए टैप करें"; "LISTENING" -> "सुन रहा हूँ..."; "PROCESSING" -> "सोच रहा हूँ..."; "SPEAKING" -> "बोल रहा हूँ..."; else -> "" }

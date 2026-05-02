@@ -7,8 +7,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
@@ -21,24 +25,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getStatusText
+import com.sohanreddy.sevak.data.supportedLanguages
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    langCode: String,
+    prefs: PrefsManager,
     viewModel: MainViewModel = viewModel(),
-    onChangeLanguage: () -> Unit,
     onSignOut: () -> Unit
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState()
     var showSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    // Use detected language from state, or saved language from prefs, or default to "en"
+    val currentLangCode = state.detectedLangCode
+        ?: prefs.getLanguageCode()
+        ?: "en"
 
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -101,7 +113,7 @@ fun MainScreen(
 
             // Status text
             Text(
-                text = getStatusText(state.assistantState.name, langCode),
+                text = getStatusText(state.assistantState.name, currentLangCode),
                 color = textColor,
                 fontSize = 18.sp
             )
@@ -130,21 +142,64 @@ fun MainScreen(
         if (showSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showSheet = false },
-                sheetState = sheetState
+                sheetState = sheetState,
+                containerColor = Color(0xFF1A1A2E)
             ) {
                 Column(modifier = Modifier.padding(24.dp)) {
                     Text(
                         "Change Language",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                showSheet = false
-                                onChangeLanguage()
-                            }
-                            .padding(vertical = 16.dp),
-                        fontSize = 18.sp
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(bottom = 16.dp)
                     )
-                    HorizontalDivider()
+
+                    // Language grid — 2 columns, 4 rows
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.heightIn(max = 320.dp)
+                    ) {
+                        items(supportedLanguages) { lang ->
+                            val isSelected = currentLangCode == lang.code
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.setLanguageManually(lang.code, lang.englishName)
+                                        showSheet = false
+                                    },
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) Color(0xFF4CAF50) else Color(0xFF2A2A3E),
+                                tonalElevation = if (isSelected) 4.dp else 0.dp
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 14.dp, horizontal = 12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = lang.displayName,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Text(
+                                        text = lang.englishName,
+                                        fontSize = 12.sp,
+                                        color = Color.White.copy(alpha = 0.6f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                    Spacer(Modifier.height(8.dp))
+
                     Text(
                         "Sign Out",
                         modifier = Modifier
@@ -155,7 +210,7 @@ fun MainScreen(
                             }
                             .padding(vertical = 16.dp),
                         fontSize = 18.sp,
-                        color = MaterialTheme.colorScheme.error
+                        color = Color(0xFFEF5350)
                     )
                     Spacer(Modifier.height(32.dp))
                 }

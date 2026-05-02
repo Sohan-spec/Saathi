@@ -10,16 +10,18 @@ import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.*
 import java.util.concurrent.TimeUnit
 
-data class SttResponse(val transcript: String)
+data class SttResponse(
+    val transcript: String,
+    val language_code: String? = null,
+    val language_probability: Float? = null
+)
 
 data class TtsRequest(
-    val inputs: List<String>,
+    val text: String,
     val target_language_code: String,
-    val model: String = "bulbul:v3",
-    val speaker: String = "meera"
+    val model: String = "bulbul:v3"
 )
-data class TtsAudio(val audio: String) // base64 encoded
-data class TtsResponse(val audios: List<TtsAudio>)
+data class TtsResponse(val audios: List<String>) // list of base64-encoded audio strings
 
 interface SarvamApiService {
     @Multipart

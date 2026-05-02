@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.sohanreddy.sevak.audio.AudioHelper
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getLanguageByCode
+import com.sohanreddy.sevak.data.getLanguageBySarvamCode
 import com.sohanreddy.sevak.network.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,7 +25,8 @@ enum class AssistantState { IDLE, LISTENING, PROCESSING, SPEAKING }
 data class MainScreenState(
     val assistantState: AssistantState = AssistantState.IDLE,
     val lastResponse: String = "",
-    val error: String? = null
+    val error: String? = null,
+    val detectedLangCode: String? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,6 +45,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun hasAudioPermission(): Boolean = audioHelper.hasPermission()
+
+    /** Called from settings when user manually picks a language */
+    fun setLanguageManually(code: String, name: String) {
+        prefs.saveLanguage(code, name)
+        Log.d("MainVM", "Language manually set to $code ($name)")
+    }
 
     fun onMicTap() {
         when (_state.value.assistantState) {
@@ -73,25 +81,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         Log.d("MainVM", "WAV file: ${wavFile.absolutePath}, size: ${wavFile.length()} bytes")
 
-        val langCode = prefs.getLanguageCode() ?: "en"
-        val lang = getLanguageByCode(langCode)
-        val sarvamCode = lang?.sarvamCode ?: "en-IN"
-
         viewModelScope.launch(Dispatchers.IO) {
             var transcript: String? = null
+            var detectedSarvamCode: String? = null
+
+            // Determine language code to send to STT
+            // If user has a saved language, use it; otherwise send "unknown" for auto-detect
+            val savedLangCode = prefs.getLanguageCode()
+            val savedLang = savedLangCode?.let { getLanguageByCode(it) }
+            val sttLangCode = savedLang?.sarvamCode ?: "unknown"
 
             // Try Sarvam STT
             try {
-                Log.d("MainVM", "Calling Sarvam STT with lang=$sarvamCode")
+                Log.d("MainVM", "Calling Sarvam STT with lang=$sttLangCode")
                 val filePart = MultipartBody.Part.createFormData(
                     "file", wavFile.name,
                     wavFile.asRequestBody("audio/wav".toMediaTypeOrNull())
                 )
                 val modelPart = "saaras:v3".toRequestBody("text/plain".toMediaTypeOrNull())
-                val langPart = sarvamCode.toRequestBody("text/plain".toMediaTypeOrNull())
+                val langPart = sttLangCode.toRequestBody("text/plain".toMediaTypeOrNull())
                 val response = SarvamApi.speechToText(file = filePart, model = modelPart, languageCode = langPart)
                 transcript = response.transcript
-                Log.d("MainVM", "STT transcript: $transcript")
+                detectedSarvamCode = response.language_code
+                Log.d("MainVM", "STT transcript: $transcript, detected_lang: $detectedSarvamCode")
             } catch (e: Exception) {
                 Log.e("MainVM", "Sarvam STT failed: ${e.message}", e)
             }
@@ -105,8 +117,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            // Resolve the language to use for LLM + TTS
+            // Priority: detected language from STT > saved language > default hi-IN
+            val resolvedSarvamCode: String
+            val resolvedLang: com.sohanreddy.sevak.data.Language
+
+            if (savedLang != null) {
+                // User has explicitly chosen a language, use it
+                resolvedSarvamCode = savedLang.sarvamCode
+                resolvedLang = savedLang
+            } else if (!detectedSarvamCode.isNullOrBlank()) {
+                // Auto-detected from STT — save it for future use
+                val detected = getLanguageBySarvamCode(detectedSarvamCode)
+                if (detected != null) {
+                    resolvedSarvamCode = detected.sarvamCode
+                    resolvedLang = detected
+                    // Persist detected language
+                    prefs.saveLanguage(detected.code, detected.englishName)
+                    Log.d("MainVM", "Auto-detected and saved language: ${detected.code} (${detected.englishName})")
+                } else {
+                    // Detected a language we don't support — default to Hindi
+                    resolvedSarvamCode = "hi-IN"
+                    resolvedLang = getLanguageBySarvamCode("hi-IN")!!
+                    prefs.saveLanguage("hi", "Hindi")
+                    Log.d("MainVM", "Unsupported detected language $detectedSarvamCode, defaulting to hi-IN")
+                }
+            } else {
+                // Nothing detected, default to Hindi
+                resolvedSarvamCode = "hi-IN"
+                resolvedLang = getLanguageBySarvamCode("hi-IN")!!
+                prefs.saveLanguage("hi", "Hindi")
+                Log.d("MainVM", "No language detected, defaulting to hi-IN")
+            }
+
+            _state.value = _state.value.copy(detectedLangCode = resolvedLang.code)
+
             // Call Groq LLM
-            val langName = lang?.englishName ?: "English"
+            val langName = resolvedLang.englishName
             Log.d("MainVM", "Calling Groq with transcript: $transcript, lang: $langName")
             val responseText = callGroq(transcript, langName)
             Log.d("MainVM", "Groq response: $responseText")
@@ -116,34 +163,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Call Sarvam TTS
             _state.value = _state.value.copy(assistantState = AssistantState.SPEAKING)
             try {
-                Log.d("MainVM", "Calling Sarvam TTS with lang=$sarvamCode")
+                Log.d("MainVM", "Calling Sarvam TTS with lang=$resolvedSarvamCode")
                 val ttsReq = TtsRequest(
-                    inputs = listOf(responseText),
-                    target_language_code = sarvamCode
+                    text = responseText,
+                    target_language_code = resolvedSarvamCode
                 )
                 val ttsResp = SarvamApi.textToSpeech(request = ttsReq)
                 if (ttsResp.audios.isNotEmpty()) {
                     Log.d("MainVM", "TTS audio received, playing...")
-                    audioHelper.playBase64Audio(ttsResp.audios[0].audio) {
+                    audioHelper.playBase64Audio(ttsResp.audios[0]) {
                         _state.value = _state.value.copy(assistantState = AssistantState.IDLE)
                     }
                     return@launch
                 } else {
                     Log.w("MainVM", "TTS returned empty audios")
                 }
+            } catch (e: retrofit2.HttpException) {
+                val errorBody = e.response()?.errorBody()?.string()
+                Log.e("MainVM", "Sarvam TTS HTTP ${e.code()}: $errorBody", e)
             } catch (e: Exception) {
                 Log.e("MainVM", "Sarvam TTS failed: ${e.message}", e)
             }
 
             // Fallback to Android TTS
             Log.d("MainVM", "Falling back to Android TTS")
-            fallbackTts(responseText, sarvamCode)
+            fallbackTts(responseText, resolvedSarvamCode)
         }
     }
 
     private suspend fun callGroq(transcript: String, langName: String): String {
         return try {
-            val systemPrompt = """You are Saathi, a helpful AI assistant for rural and semi-urban Indian users.
+            val systemPrompt = """You are Vince, a helpful AI assistant for rural and semi-urban Indian users.
 The user speaks $langName. Always respond in $langName only.
 Use extremely simple words. Speak like a helpful neighbor, not a government form.
 Keep responses under 3 sentences. Be direct and actionable.
