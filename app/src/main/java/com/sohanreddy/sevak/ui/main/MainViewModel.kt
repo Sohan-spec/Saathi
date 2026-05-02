@@ -15,6 +15,7 @@ import com.sohanreddy.sevak.data.rag.ContextBuilder
 import com.sohanreddy.sevak.data.rag.EmbeddingManager
 import com.sohanreddy.sevak.data.rag.VectorStoreManager
 import com.sohanreddy.sevak.network.*
+import com.sohanreddy.sevak.screenshare.ScreenShareSessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -53,7 +54,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Silence detection
     private val silenceThreshold = 0.015f
-    private val silenceTimeoutMs = 1500L
     // Voice activity + turn-end detection tuned for noisy mobile mic input.
     private val silenceTimeoutMs = 1400L
     private val noSpeechTimeoutMs = 5000L
@@ -117,14 +117,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onMicTap() {
         if (!liveModeEnabled) {
-            liveModeEnabled = true
-            Log.d("MainVM", "Live mode enabled")
-            if (_state.value.assistantState == AssistantState.IDLE) {
-                startListening()
-            }
-            return
+            enableLiveModeIfNeeded()
+        } else {
+            disableLiveModeIfEnabled()
         }
+    }
 
+    fun enableLiveModeIfNeeded() {
+        if (liveModeEnabled) return
+        liveModeEnabled = true
+        Log.d("MainVM", "Live mode enabled")
+        if (_state.value.assistantState == AssistantState.IDLE) {
+            startListening()
+        }
+    }
+
+    fun disableLiveModeIfEnabled() {
+        if (!liveModeEnabled && _state.value.assistantState == AssistantState.IDLE) return
         Log.d("MainVM", "Live mode disabled")
         stopLiveMode()
     }
@@ -339,8 +348,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // Call Groq LLM with RAG context
             val langName = resolvedLang.englishName
+            val screenshotDataUrl = if (shouldAttachScreenSnapshot(transcript)) {
+                ScreenShareSessionManager.latestScreenshotDataUrl()
+            } else {
+                null
+            }
+            if (ScreenShareSessionManager.isActive.value) {
+                Log.d(
+                    "MainVM",
+                    "Live screen mode: screenshotAttached=${!screenshotDataUrl.isNullOrBlank()} transcript=$transcript"
+                )
+            }
             Log.d("MainVM", "Calling Groq with transcript: $transcript, lang: $langName")
-            val responseText = callGroq(transcript, langName, ragContext)
+            val responseText = callGroq(transcript, langName, ragContext, screenshotDataUrl)
             Log.d("MainVM", "Groq response: $responseText")
 
             _state.value = _state.value.copy(lastResponse = responseText)
@@ -397,32 +417,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
     }
 
-    private suspend fun callGroq(transcript: String, langName: String, ragContext: String = ""): String {
-        return try {
-            val systemPrompt = buildString {
-                append("You are Saathi, a helpful AI assistant for rural and semi-urban Indian users.\n")
-                append("The user speaks $langName. Always respond in $langName only.\n")
-                append("Use extremely simple words. Speak like a helpful neighbor, not a government form.\n")
-                append("Keep responses under 3 sentences. Be direct and actionable.\n")
-                append("If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English.")
-                if (ragContext.isNotBlank()) {
-                    append("\n\nPrevious conversation context (use this to remember what the user told you):\n")
-                    append(ragContext)
+    private suspend fun callGroq(
+        transcript: String,
+        langName: String,
+        ragContext: String = "",
+        screenshotDataUrl: String? = null
+    ): String {
+        val liveScreenMode = ScreenShareSessionManager.isActive.value
+        val hasScreenshot = !screenshotDataUrl.isNullOrBlank()
+
+        val systemPrompt = buildString {
+            append("You are Saathi, a helpful AI assistant for rural and semi-urban Indian users.\n")
+            append("The user speaks $langName. Always respond in $langName only.\n")
+            append("Use extremely simple words. Speak like a helpful neighbor, not a government form.\n")
+            append("Keep responses under 3 sentences. Be direct and actionable.\n")
+            append("If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English.")
+
+            if (liveScreenMode) {
+                append("\n\nYou are currently in LIVE SCREEN ASSIST mode.")
+                append("\nIf a screenshot is attached, treat it as the user's current phone screen.")
+                append("\nNever claim you cannot see the screen when a screenshot is attached.")
+                append("\nWhen user asks how to do something on the phone, give clear step-by-step tap instructions using visible UI labels.")
+                append("\nIf an exact button is not visible in screenshot, clearly say what is missing and ask for one focused follow-up screenshot.")
+
+                if (!hasScreenshot) {
+                    append("\nNo screenshot is attached for this turn. Mention this briefly and ask the user to keep the relevant screen open and repeat once.")
                 }
             }
 
-            val request = GroqRequest(
-                messages = listOf(
-                    GroqMessage("system", systemPrompt),
-                    GroqMessage("user", transcript)
-                )
+            if (ragContext.isNotBlank()) {
+                append("\n\nPrevious conversation context (use this to remember what the user told you):\n")
+                append(ragContext)
+            }
+        }
+
+        val baseMessages = mutableListOf(groqTextMessage("system", systemPrompt))
+
+        if (!screenshotDataUrl.isNullOrBlank()) {
+            val visionRequest = GroqRequest(
+                model = "meta-llama/llama-4-scout-17b-16e-instruct",
+                messages = baseMessages + groqVisionMessage("user", transcript, screenshotDataUrl)
             )
-            val response = GroqApi.chat(request = request)
+            try {
+                val response = GroqApi.chat(request = visionRequest)
+                val content = response.choices.firstOrNull()?.message?.content
+                if (!content.isNullOrBlank()) {
+                    return content
+                }
+            } catch (e: Exception) {
+                Log.w("MainVM", "Vision request failed, retrying text-only: ${e.message}")
+            }
+        }
+
+        return try {
+            val textRequest = GroqRequest(
+                model = "llama-3.3-70b-versatile",
+                messages = baseMessages + groqTextMessage("user", transcript)
+            )
+            val response = GroqApi.chat(request = textRequest)
             response.choices.firstOrNull()?.message?.content ?: "Something went wrong, please try again"
         } catch (e: Exception) {
             Log.e("MainVM", "Groq failed: ${e.message}", e)
             "Something went wrong, please try again"
         }
+    }
+
+    private fun shouldAttachScreenSnapshot(transcript: String): Boolean {
+        if (!ScreenShareSessionManager.isActive.value) return false
+
+        // Language-specific keyword gating caused missed screenshot attachment for non-English speech.
+        // In live screen mode, attach screenshot for every non-empty user turn so screen guidance works
+        // across all supported languages and transliterations.
+        return transcript.isNotBlank()
     }
 
     private fun fallbackTts(text: String, langCode: String) {
