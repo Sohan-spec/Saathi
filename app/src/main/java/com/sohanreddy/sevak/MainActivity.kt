@@ -1,20 +1,41 @@
 package com.sohanreddy.sevak
 
 import android.os.Bundle
-import androidx.activity.enableEdgeToEdge
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.navigation.compose.rememberNavController
+import com.sohanreddy.sevak.data.PrefsManager
+import com.sohanreddy.sevak.navigation.SaathiNavGraph
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContentView(R.layout.activity_main)
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
+
+        if (!isOnline()) {
+            Toast.makeText(this, "No internet connection", Toast.LENGTH_LONG).show()
         }
+
+        val prefs = PrefsManager(this)
+
+        setContent {
+            MaterialTheme {
+                Surface {
+                    val navController = rememberNavController()
+                    SaathiNavGraph(navController = navController, prefs = prefs)
+                }
+            }
+        }
+    }
+
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 }
