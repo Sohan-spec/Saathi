@@ -29,6 +29,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.firebase.auth.PhoneAuthProvider
@@ -48,6 +49,7 @@ fun OtpScreen(
     val context = LocalContext.current
     val activity = context as android.app.Activity
     val focusRequester = remember { FocusRequester() }
+    var lastAutoSubmittedOtp by rememberSaveable { mutableStateOf("") }
 
     // Countdown timer
     LaunchedEffect(state.canResend) {
@@ -68,6 +70,21 @@ fun OtpScreen(
     // Auto-focus the OTP field
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+    }
+
+    // Auto-submit exactly once for each completed 6-digit value.
+    LaunchedEffect(state.otp, state.isLoading, state.verified, verificationId) {
+        if (state.otp.length < 6) {
+            lastAutoSubmittedOtp = ""
+        } else if (
+            state.otp.length == 6 &&
+            !state.isLoading &&
+            !state.verified &&
+            state.otp != lastAutoSubmittedOtp
+        ) {
+            lastAutoSubmittedOtp = state.otp
+            viewModel.verify(verificationId)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -94,20 +111,10 @@ fun OtpScreen(
             Image(
                 painter = painterResource(R.drawable.saathi_logo),
                 contentDescription = "Saathi logo",
-                modifier = Modifier.size(80.dp)
+                modifier = Modifier.size(156.dp)
             )
 
-            Spacer(Modifier.height(12.dp))
-
-            // App name
-            Text(
-                text = "saathi",
-                color = Color.White,
-                fontSize = 32.sp,
-                style = MaterialTheme.typography.headlineLarge
-            )
-
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(28.dp))
 
             // Heading
             Text(
@@ -136,35 +143,40 @@ fun OtpScreen(
                     .focusRequester(focusRequester)
                     .fillMaxWidth(),
                 decorationBox = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        repeat(6) { index ->
-                            val char = state.otp.getOrNull(index)?.toString() ?: ""
-                            val isFocused = state.otp.length == index
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val spacing = 8.dp
+                        val boxSize = ((maxWidth - (spacing * 5)) / 6).coerceAtMost(56.dp)
 
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(50.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(Color.White.copy(alpha = 0.95f))
-                                    .then(
-                                        if (isFocused) Modifier.border(
-                                            2.dp,
-                                            SaathiColors.Primary,
-                                            RoundedCornerShape(14.dp)
-                                        ) else Modifier
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(spacing, Alignment.CenterHorizontally),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            repeat(6) { index ->
+                                val char = state.otp.getOrNull(index)?.toString() ?: ""
+                                val isFocused = state.otp.length == index
+
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(boxSize)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(Color.White.copy(alpha = 0.95f))
+                                        .then(
+                                            if (isFocused) Modifier.border(
+                                                2.dp,
+                                                SaathiColors.Primary,
+                                                RoundedCornerShape(14.dp)
+                                            ) else Modifier
+                                        )
+                                ) {
+                                    Text(
+                                        text = char,
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF333333),
+                                        textAlign = TextAlign.Center
                                     )
-                            ) {
-                                Text(
-                                    text = char,
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF333333),
-                                    textAlign = TextAlign.Center
-                                )
+                                }
                             }
                         }
                     }

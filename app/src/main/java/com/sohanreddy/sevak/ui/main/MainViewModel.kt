@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
+import com.sohanreddy.sevak.Constants
 import com.sohanreddy.sevak.audio.AudioHelper
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getLanguageByCode
@@ -19,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -52,8 +54,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Silence detection
     private val silenceThreshold = 0.015f
     private val silenceTimeoutMs = 1500L
+    // Voice activity + turn-end detection tuned for noisy mobile mic input.
+    private val silenceTimeoutMs = 1400L
+    private val noSpeechTimeoutMs = 5000L
+    private val maxListeningDurationMs = 12000L
     private var silenceJob: Job? = null
-    private var lastLoudTimestamp = 0L
+    private var restartListeningJob: Job? = null
+    private var processingJob: Job? = null
+    private var listeningStartedAt = 0L
+    private var lastSpeechTimestamp = 0L
+    private var hasDetectedSpeech = false
+    private var ambientNoiseFloor = 0.008f
+    private var liveModeEnabled = false
 
     init {
         androidTts = TextToSpeech(application) { status ->
@@ -61,13 +73,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Wire up amplitude callback
-        audioHelper.onAmplitudeUpdate = { amplitude ->
-            _state.value = _state.value.copy(audioAmplitude = amplitude)
+        audioHelper.onAmplitudeUpdate = { rawAmplitude ->
+            val amplitude = rawAmplitude.coerceIn(0f, 1f)
 
-            // Silence detection while listening
+            // Boost visual motion so low-volume speech still animates clearly.
+            _state.update { it.copy(audioAmplitude = (amplitude * 3.2f).coerceIn(0f, 1f)) }
+
+            // Adaptive VAD to avoid treating ambient hiss as speech forever.
             if (_state.value.assistantState == AssistantState.LISTENING) {
-                if (amplitude > silenceThreshold) {
-                    lastLoudTimestamp = System.currentTimeMillis()
+                val now = System.currentTimeMillis()
+
+                if (!hasDetectedSpeech) {
+                    ambientNoiseFloor = (ambientNoiseFloor * 0.9f) + (amplitude * 0.1f)
+                }
+
+                val speechThreshold = maxOf(0.03f, ambientNoiseFloor * 2.8f)
+                val holdThreshold = maxOf(0.018f, ambientNoiseFloor * 1.8f)
+
+                if (amplitude >= speechThreshold) {
+                    if (!hasDetectedSpeech) {
+                        Log.d("MainVM", "Speech detected. floor=$ambientNoiseFloor amp=$amplitude")
+                    }
+                    hasDetectedSpeech = true
+                    lastSpeechTimestamp = now
+                } else {
+                    if (hasDetectedSpeech && amplitude >= holdThreshold) {
+                        lastSpeechTimestamp = now
+                    } else if (amplitude < holdThreshold) {
+                        ambientNoiseFloor = (ambientNoiseFloor * 0.96f) + (amplitude * 0.04f)
+                    }
                 }
             }
         }
@@ -82,39 +116,103 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onMicTap() {
+        if (!liveModeEnabled) {
+            liveModeEnabled = true
+            Log.d("MainVM", "Live mode enabled")
+            if (_state.value.assistantState == AssistantState.IDLE) {
+                startListening()
+            }
+            return
+        }
+
+        Log.d("MainVM", "Live mode disabled")
+        stopLiveMode()
+    }
+
+    private fun stopLiveMode() {
+        liveModeEnabled = false
+        silenceJob?.cancel()
+        restartListeningJob?.cancel()
+        processingJob?.cancel()
+
         when (_state.value.assistantState) {
-            AssistantState.IDLE -> startListening()
-            AssistantState.LISTENING -> stopListeningAndProcess()
+            AssistantState.LISTENING -> audioHelper.cancelRecording()
             AssistantState.SPEAKING -> stopSpeaking()
-            else -> {} // ignore taps during processing
+            else -> {}
+        }
+
+        _state.value = _state.value.copy(
+            assistantState = AssistantState.IDLE,
+            audioAmplitude = 0f,
+            error = null
+        )
+    }
+
+    private fun scheduleListeningRestart(delayMs: Long = 350L) {
+        if (!liveModeEnabled) return
+        restartListeningJob?.cancel()
+        restartListeningJob = viewModelScope.launch {
+            delay(delayMs)
+            if (liveModeEnabled && _state.value.assistantState == AssistantState.IDLE) {
+                startListening()
+            }
         }
     }
 
     private fun startListening() {
+        if (_state.value.assistantState != AssistantState.IDLE) return
         if (!audioHelper.hasPermission()) {
             Log.w("MainVM", "No audio permission")
             return
         }
+        restartListeningJob?.cancel()
         Log.d("MainVM", "Starting recording...")
         _state.value = _state.value.copy(assistantState = AssistantState.LISTENING, error = null, audioAmplitude = 0f)
-        lastLoudTimestamp = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        listeningStartedAt = now
+        lastSpeechTimestamp = now
+        hasDetectedSpeech = false
+        ambientNoiseFloor = 0.008f
         audioHelper.startRecording()
 
         // Start silence monitoring
         silenceJob?.cancel()
         silenceJob = viewModelScope.launch {
-            // Wait a short initial period to allow user to start speaking
-            delay(800)
+            // Small warm-up period to collect a stable noise floor.
+            delay(500)
             while (_state.value.assistantState == AssistantState.LISTENING) {
-                val elapsed = System.currentTimeMillis() - lastLoudTimestamp
-                if (elapsed >= silenceTimeoutMs) {
-                    Log.d("MainVM", "Silence detected, auto-stopping...")
+                val nowTick = System.currentTimeMillis()
+                val listeningFor = nowTick - listeningStartedAt
+
+                if (hasDetectedSpeech) {
+                    val silenceFor = nowTick - lastSpeechTimestamp
+                    if (silenceFor >= silenceTimeoutMs) {
+                        Log.d("MainVM", "Turn ended by silence (${silenceFor}ms)")
+                        stopListeningAndProcess()
+                        break
+                    }
+                } else if (listeningFor >= noSpeechTimeoutMs) {
+                    Log.d("MainVM", "No speech detected in ${listeningFor}ms, restarting listen loop")
+                    stopListeningWithoutProcessing("no-speech-timeout")
+                    break
+                }
+
+                if (listeningFor >= maxListeningDurationMs) {
+                    Log.d("MainVM", "Max listen duration reached (${listeningFor}ms), processing current audio")
                     stopListeningAndProcess()
                     break
                 }
                 delay(100)
             }
         }
+    }
+
+    private fun stopListeningWithoutProcessing(reason: String) {
+        silenceJob?.cancel()
+        Log.d("MainVM", "Stopping recording without processing: $reason")
+        audioHelper.cancelRecording()
+        _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
+        scheduleListeningRestart(250)
     }
 
     private fun stopListeningAndProcess() {
@@ -125,13 +223,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (wavFile == null || !wavFile.exists()) {
             Log.e("MainVM", "Recording failed — no wav file")
             _state.value = _state.value.copy(assistantState = AssistantState.IDLE, lastResponse = "Recording failed. Please try again.")
+            scheduleListeningRestart()
             return
         }
         Log.d("MainVM", "WAV file: ${wavFile.absolutePath}, size: ${wavFile.length()} bytes")
 
-        viewModelScope.launch(Dispatchers.IO) {
+        processingJob?.cancel()
+        processingJob = viewModelScope.launch(Dispatchers.IO) {
             var transcript: String? = null
             var detectedSarvamCode: String? = null
+            var sttErrorMessage: String? = null
+
+            if (Constants.SARVAM_API_KEY.isBlank()) {
+                Log.e("MainVM", "Sarvam API key missing. Set SARVAM_API_KEY in .env or local.properties")
+                _state.value = _state.value.copy(
+                    assistantState = AssistantState.IDLE,
+                    lastResponse = "Voice service is not configured. Please set SARVAM_API_KEY."
+                )
+                scheduleListeningRestart()
+                return@launch
+            }
 
             // Determine language code to send to STT
             // If user has a saved language, use it; otherwise send "unknown" for auto-detect
@@ -152,16 +263,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 transcript = response.transcript
                 detectedSarvamCode = response.language_code
                 Log.d("MainVM", "STT transcript: $transcript, detected_lang: $detectedSarvamCode")
+            } catch (e: retrofit2.HttpException) {
+                val errorBody = e.response()?.errorBody()?.string()
+                Log.e("MainVM", "Sarvam STT HTTP ${e.code()}: $errorBody", e)
+                sttErrorMessage = if (e.code() == 403) {
+                    "Voice service denied access. Verify your Sarvam API key and credits."
+                } else {
+                    "Could not understand. Please try again."
+                }
             } catch (e: Exception) {
                 Log.e("MainVM", "Sarvam STT failed: ${e.message}", e)
+                sttErrorMessage = "Could not understand. Please try again."
             }
 
             if (transcript.isNullOrBlank()) {
                 Log.w("MainVM", "No transcript, showing error")
                 _state.value = _state.value.copy(
                     assistantState = AssistantState.IDLE,
-                    lastResponse = "Could not understand. Please try again."
+                    lastResponse = sttErrorMessage ?: "Could not understand. Please try again."
                 )
+                scheduleListeningRestart()
                 return@launch
             }
 
@@ -249,6 +370,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     Log.d("MainVM", "TTS audio received, playing...")
                     audioHelper.playBase64Audio(ttsResp.audios[0]) {
                         _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
+                        scheduleListeningRestart()
                     }
                     return@launch
                 } else {
@@ -307,6 +429,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!ttsReady) {
             Log.w("MainVM", "Android TTS not ready")
             _state.value = _state.value.copy(assistantState = AssistantState.IDLE)
+            scheduleListeningRestart()
             return
         }
         val locale = when {
@@ -324,9 +447,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) {
                 _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
+                scheduleListeningRestart()
             }
             @Deprecated("Deprecated") override fun onError(utteranceId: String?) {
                 _state.value = _state.value.copy(assistantState = AssistantState.IDLE, audioAmplitude = 0f)
+                scheduleListeningRestart()
             }
         })
         androidTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "saathi_tts")
@@ -334,6 +459,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         silenceJob?.cancel()
+        restartListeningJob?.cancel()
+        processingJob?.cancel()
+        audioHelper.cancelRecording()
         audioHelper.stopPlayback()
         androidTts?.shutdown()
         super.onCleared()

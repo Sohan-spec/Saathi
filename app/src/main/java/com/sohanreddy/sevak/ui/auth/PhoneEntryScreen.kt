@@ -68,20 +68,10 @@ fun PhoneEntryScreen(
             Image(
                 painter = painterResource(R.drawable.saathi_logo),
                 contentDescription = "Saathi logo",
-                modifier = Modifier.size(80.dp)
+                modifier = Modifier.size(162.dp)
             )
 
-            Spacer(Modifier.height(12.dp))
-
-            // App name
-            Text(
-                text = "saathi",
-                color = Color.White,
-                fontSize = 32.sp,
-                style = MaterialTheme.typography.headlineLarge
-            )
-
-            Spacer(Modifier.weight(0.12f))
+            Spacer(Modifier.weight(0.16f))
 
             // ── Phone input pill ────────────────────────────────────
             Surface(
@@ -115,7 +105,7 @@ fun PhoneEntryScreen(
                         value = state.phone,
                         onValueChange = viewModel::onPhoneChange,
                         placeholder = {
-                            Text("Enter phone number", color = Color(0xFFAAAAAA), fontSize = 16.sp)
+                            Text("Enter number", color = Color(0xFFAAAAAA), fontSize = 16.sp)
                         },
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Number,
