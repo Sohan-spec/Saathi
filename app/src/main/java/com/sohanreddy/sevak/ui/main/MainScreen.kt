@@ -14,19 +14,21 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -257,13 +259,28 @@ fun MainScreen(
             }
         }
 
-        // Quick share bubble launcher in bottom-right corner.
-        Surface(
+        // Quick share logo launcher in bottom-right corner.
+        Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .navigationBarsPadding()
-                .padding(end = 18.dp, bottom = 24.dp)
-                .size(74.dp)
+                .padding(end = 14.dp, bottom = 20.dp)
+                .size(84.dp)
+                .drawBehind {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color(0x804E9EFF),
+                                Color(0x4D4E9EFF),
+                                Color.Transparent
+                            ),
+                            center = center,
+                            radius = size.minDimension * 0.52f
+                        ),
+                        radius = size.minDimension * 0.52f,
+                        center = center
+                    )
+                }
                 .clickable {
                     if (viewModel.hasAudioPermission()) {
                         if (Settings.canDrawOverlays(context)) {
@@ -279,19 +296,14 @@ fun MainScreen(
                         screenShareAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 },
-            shape = RoundedCornerShape(37.dp),
-            color = Color(0xCC0D244F),
-            shadowElevation = 8.dp,
-            tonalElevation = 1.dp
+            contentAlignment = Alignment.Center
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                Image(
-                    painter = painterResource(R.drawable.saathi_logo),
-                    contentDescription = "Share screen",
-                    modifier = Modifier.size(44.dp),
-                    contentScale = ContentScale.Crop
-                )
-            }
+            Image(
+                painter = painterResource(R.drawable.saathi_logo),
+                contentDescription = "Share screen",
+                modifier = Modifier.size(54.dp),
+                contentScale = ContentScale.Crop
+            )
         }
 
         // ── Settings bottom sheet ───────────────────────────────────

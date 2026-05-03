@@ -23,6 +23,11 @@ class VoiceBubbleOverlayView @JvmOverloads constructor(
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+    }
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -127,6 +132,47 @@ class VoiceBubbleOverlayView @JvmOverloads constructor(
             Shader.TileMode.CLAMP
         )
         canvas.drawCircle(cx, cy, radius, glowPaint)
+
+        glassPaint.shader = LinearGradient(
+            cx - radius,
+            cy - radius,
+            cx + radius,
+            cy + radius,
+            Color.argb(38, 255, 255, 255),
+            Color.argb(14, 255, 255, 255),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, radius * 0.96f, glassPaint)
+
+        val sheenRect = RectF(
+            cx - radius * 0.72f,
+            cy - radius * 0.86f,
+            cx + radius * 0.72f,
+            cy - radius * 0.06f
+        )
+        sheenPaint.shader = LinearGradient(
+            sheenRect.left,
+            sheenRect.top,
+            sheenRect.right,
+            sheenRect.bottom,
+            Color.argb(110, 255, 255, 255),
+            Color.argb(0, 255, 255, 255),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawOval(sheenRect, sheenPaint)
+
+        rimPaint.shader = LinearGradient(
+            0f,
+            0f,
+            w,
+            h,
+            Color.argb(155, 225, 242, 255),
+            Color.argb(72, 225, 242, 255),
+            Shader.TileMode.CLAMP
+        )
+        rimPaint.strokeWidth = dp(1.5f)
+        canvas.drawOval(RectF(dp(0.9f), dp(0.9f), w - dp(0.9f), h - dp(0.9f)), rimPaint)
+        rimPaint.shader = null
 
         val clipPath = Path().apply { addCircle(cx, cy, radius * 0.98f, Path.Direction.CW) }
         val save = canvas.save()

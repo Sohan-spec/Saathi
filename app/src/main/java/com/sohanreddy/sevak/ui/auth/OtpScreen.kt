@@ -108,11 +108,16 @@ fun OtpScreen(
             Spacer(Modifier.weight(0.25f))
 
             // Logo
-            Image(
-                painter = painterResource(R.drawable.saathi_logo),
-                contentDescription = "Saathi logo",
-                modifier = Modifier.size(156.dp)
-            )
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.saathi_logo),
+                    contentDescription = "Saathi logo",
+                    modifier = Modifier.size(168.dp)
+                )
+            }
 
             Spacer(Modifier.height(28.dp))
 
