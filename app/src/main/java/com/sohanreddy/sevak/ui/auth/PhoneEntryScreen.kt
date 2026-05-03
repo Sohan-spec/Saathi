@@ -65,11 +65,16 @@ fun PhoneEntryScreen(
             Spacer(Modifier.weight(0.30f))
 
             // Logo
-            Image(
-                painter = painterResource(R.drawable.saathi_logo),
-                contentDescription = "Saathi logo",
-                modifier = Modifier.size(162.dp)
-            )
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.saathi_logo),
+                    contentDescription = "Saathi logo",
+                    modifier = Modifier.size(176.dp)
+                )
+            }
 
             Spacer(Modifier.weight(0.16f))
 

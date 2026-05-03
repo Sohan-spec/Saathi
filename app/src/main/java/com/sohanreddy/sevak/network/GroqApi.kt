@@ -11,15 +11,51 @@ import retrofit2.http.Header
 import retrofit2.http.POST
 import java.util.concurrent.TimeUnit
 
-data class GroqMessage(val role: String, val content: String)
+data class GroqMessagePartText(
+    val type: String = "text",
+    val text: String
+)
+
+data class GroqImageUrl(val url: String)
+
+data class GroqMessagePartImage(
+    val type: String = "image_url",
+    val image_url: GroqImageUrl
+)
+
+data class GroqRequestMessage(
+    val role: String,
+    val content: Any
+)
+
 data class GroqRequest(
     val model: String = "llama-3.3-70b-versatile",
-    val messages: List<GroqMessage>,
+    val messages: List<GroqRequestMessage>,
     val temperature: Double = 0.4,
     val max_tokens: Int = 300
 )
-data class GroqChoice(val message: GroqMessage)
+
+data class GroqResponseMessage(
+    val role: String? = null,
+    val content: String? = null
+)
+
+data class GroqChoice(val message: GroqResponseMessage)
 data class GroqResponse(val choices: List<GroqChoice>)
+
+fun groqTextMessage(role: String, text: String): GroqRequestMessage {
+    return GroqRequestMessage(role = role, content = text)
+}
+
+fun groqVisionMessage(role: String, text: String, imageDataUrl: String): GroqRequestMessage {
+    return GroqRequestMessage(
+        role = role,
+        content = listOf(
+            GroqMessagePartText(text = text),
+            GroqMessagePartImage(image_url = GroqImageUrl(imageDataUrl))
+        )
+    )
+}
 
 interface GroqApiService {
     @POST("openai/v1/chat/completions")

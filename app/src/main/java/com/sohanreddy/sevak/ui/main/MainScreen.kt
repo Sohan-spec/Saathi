@@ -1,27 +1,36 @@
 package com.sohanreddy.sevak.ui.main
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.media.projection.MediaProjectionConfig
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -29,12 +38,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sohanreddy.sevak.R
 import com.sohanreddy.sevak.data.PrefsManager
 import com.sohanreddy.sevak.data.getStatusText
 import com.sohanreddy.sevak.data.supportedLanguages
+import com.sohanreddy.sevak.screenshare.ScreenShareService
 import com.sohanreddy.sevak.ui.theme.SaathiColors
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,6 +60,51 @@ fun MainScreen(
     var showSheet by remember { mutableStateOf(false) }
     val waveformInteraction = remember { MutableInteractionSource() }
     val context = LocalContext.current
+    val activity = context as? Activity
+    val projectionManager = remember(context) { context.getSystemService(MediaProjectionManager::class.java) }
+
+    val mediaProjectionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val projectionData = result.data
+        if (result.resultCode != Activity.RESULT_OK || projectionData == null) {
+            Toast.makeText(context, "Screen sharing permission denied", Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
+
+        val serviceIntent = Intent(context, ScreenShareService::class.java).apply {
+            action = ScreenShareService.ACTION_START
+            putExtra(ScreenShareService.EXTRA_RESULT_CODE, result.resultCode)
+            putExtra(ScreenShareService.EXTRA_RESULT_DATA, projectionData)
+        }
+        ContextCompat.startForegroundService(context, serviceIntent)
+        Toast.makeText(context, "Screen sharing started", Toast.LENGTH_SHORT).show()
+        activity?.moveTaskToBack(true)
+    }
+
+    val launchProjectionRequest: () -> Unit = {
+        val manager = projectionManager
+        if (manager == null) {
+            Toast.makeText(context, "Screen capture is unavailable on this device", Toast.LENGTH_SHORT).show()
+        } else {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else {
+                manager.createScreenCaptureIntent()
+            }
+            mediaProjectionLauncher.launch(intent)
+        }
+    }
+
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (Settings.canDrawOverlays(context)) {
+            launchProjectionRequest()
+        } else {
+            Toast.makeText(context, "Overlay permission is required for floating bubble", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Use detected language from state, or saved language from prefs, or default to "en"
     val currentLangCode = state.detectedLangCode
@@ -63,6 +119,25 @@ fun MainScreen(
             viewModel.onMicTap()
         } else {
             Toast.makeText(context, "Microphone permission is required", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val screenShareAudioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(context, "Microphone permission is required", Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
+
+        if (Settings.canDrawOverlays(context)) {
+            launchProjectionRequest()
+        } else {
+            val overlayIntent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${context.packageName}")
+            )
+            overlayPermissionLauncher.launch(overlayIntent)
         }
     }
 
@@ -139,6 +214,95 @@ fun MainScreen(
                 fontSize = 13.sp,
                 letterSpacing = 1.5.sp,
                 fontWeight = FontWeight.Normal
+            )
+        }
+
+        // ── Generated Image Overlay ──────────────────────────────────
+        val generatedImage = state.generatedImage
+        if (generatedImage != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth()
+                    .clickable { viewModel.clearGeneratedImage() },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.75f),
+                    tonalElevation = 8.dp,
+                    shadowElevation = 16.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Image(
+                            bitmap = generatedImage.asImageBitmap(),
+                            contentDescription = "AI generated image",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 300.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Tap to dismiss",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Quick share logo launcher in bottom-right corner.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 14.dp, bottom = 20.dp)
+                .size(84.dp)
+                .drawBehind {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color(0x804E9EFF),
+                                Color(0x4D4E9EFF),
+                                Color.Transparent
+                            ),
+                            center = center,
+                            radius = size.minDimension * 0.52f
+                        ),
+                        radius = size.minDimension * 0.52f,
+                        center = center
+                    )
+                }
+                .clickable {
+                    if (viewModel.hasAudioPermission()) {
+                        if (Settings.canDrawOverlays(context)) {
+                            launchProjectionRequest()
+                        } else {
+                            val overlayIntent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                            overlayPermissionLauncher.launch(overlayIntent)
+                        }
+                    } else {
+                        screenShareAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(R.drawable.saathi_logo),
+                contentDescription = "Share screen",
+                modifier = Modifier.size(54.dp),
+                contentScale = ContentScale.Crop
             )
         }
 
