@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -212,6 +213,48 @@ fun MainScreen(
                 letterSpacing = 1.5.sp,
                 fontWeight = FontWeight.Normal
             )
+        }
+
+        // ── Generated Image Overlay ──────────────────────────────────
+        val generatedImage = state.generatedImage
+        if (generatedImage != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth()
+                    .clickable { viewModel.clearGeneratedImage() },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.75f),
+                    tonalElevation = 8.dp,
+                    shadowElevation = 16.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Image(
+                            bitmap = generatedImage.asImageBitmap(),
+                            contentDescription = "AI generated image",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 300.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Tap to dismiss",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
         }
 
         // Quick share bubble launcher in bottom-right corner.

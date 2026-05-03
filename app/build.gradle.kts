@@ -47,9 +47,11 @@ android {
 
         val groqKey = resolveSecret("GROQ_API_KEY")
         val sarvamKey = resolveSecret("SARVAM_API_KEY")
+        val hfToken = resolveSecret("HF_TOKEN")
 
         buildConfigField("String", "GROQ_API_KEY", "\"$groqKey\"")
         buildConfigField("String", "SARVAM_API_KEY", "\"$sarvamKey\"")
+        buildConfigField("String", "HF_TOKEN", "\"$hfToken\"")
     }
 
     buildTypes {

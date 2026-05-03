@@ -1,5 +1,6 @@
 package com.sohanreddy.sevak.ui.main
 
+import android.graphics.Bitmap
 import android.app.Application
 import android.speech.tts.TextToSpeech
 import android.util.Log
@@ -15,6 +16,7 @@ import com.sohanreddy.sevak.data.rag.ContextBuilder
 import com.sohanreddy.sevak.data.rag.EmbeddingManager
 import com.sohanreddy.sevak.data.rag.VectorStoreManager
 import com.sohanreddy.sevak.network.*
+import com.sohanreddy.sevak.network.ImageGenerationRepository
 import com.sohanreddy.sevak.screenshare.ScreenShareSessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,7 +39,8 @@ data class MainScreenState(
     val lastResponse: String = "",
     val error: String? = null,
     val detectedLangCode: String? = null,
-    val audioAmplitude: Float = 0f
+    val audioAmplitude: Float = 0f,
+    val generatedImage: Bitmap? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -360,10 +363,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             Log.d("MainVM", "Calling Groq with transcript: $transcript, lang: $langName")
-            val responseText = callGroq(transcript, langName, ragContext, screenshotDataUrl)
-            Log.d("MainVM", "Groq response: $responseText")
+            val rawResponse = callGroq(transcript, langName, ragContext, screenshotDataUrl)
+            Log.d("MainVM", "Groq raw response: $rawResponse")
 
-            _state.value = _state.value.copy(lastResponse = responseText)
+            // Parse response: extract spoken text and optional image prompt
+            val (responseText, imagePrompt) = parseImageTag(rawResponse)
+            Log.d("MainVM", "Parsed: text=${responseText.take(80)}, imagePrompt=${imagePrompt ?: "none"}")
+
+            _state.update { it.copy(lastResponse = responseText, generatedImage = null) }
+
+            // Fire image generation in parallel (non-blocking)
+            if (imagePrompt != null) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    Log.d("MainVM", "Generating image in background...")
+                    val bitmap = ImageGenerationRepository.generate(imagePrompt)
+                    if (bitmap != null) {
+                        _state.update { it.copy(generatedImage = bitmap) }
+                        Log.d("MainVM", "✓ Image ready, shown to user")
+                    }
+                }
+            }
 
             // --- RAG PIPELINE: Store conversation turn ---
             if (EmbeddingManager.isReady.value) {
@@ -431,7 +450,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             append("The user speaks $langName. Always respond in $langName only.\n")
             append("Use extremely simple words. Speak like a helpful neighbor, not a government form.\n")
             append("Keep responses under 3 sentences. Be direct and actionable.\n")
-            append("If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English.")
+            append("If asked about government schemes, give eligibility in one line and the single most important next step. Never use English if the selected language is not English.\n")
+            append("\nIMAGE GENERATION RULE (VERY STRICT — default is NO image):\n")
+            append("You have the ability to generate ONE image per response by appending a special tag.\n")
+            append("However, you must almost NEVER use it. 95% of responses should have NO image.\n")
+            append("DO NOT generate an image for: greetings, introductions, general knowledge, advice, ")
+            append("government schemes, weather, prices, phone numbers, dates, directions, ")
+            append("how-to instructions, opinions, calculations, comparisons, conversations, or ANY abstract topic.\n")
+            append("ONLY generate an image when ALL of these conditions are true:\n")
+            append("1. The user is specifically asking what something PHYSICAL looks like (appearance/identification)\n")
+            append("2. The thing is a real-world visual object: a crop, pest, disease symptom, animal, tool, plant, soil type\n")
+            append("3. A voice-only description would genuinely fail to convey the answer\n")
+            append("If ALL 3 conditions are met, add EXACTLY ONE line at the very end:\n")
+            append("[IMAGE: detailed photorealistic English description]\n")
+            append("When in doubt, do NOT add [IMAGE:]. Voice is always enough.")
 
             if (liveScreenMode) {
                 append("\n\nYou are currently in LIVE SCREEN ASSIST mode.")
@@ -521,6 +553,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         })
         androidTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "saathi_tts")
+    }
+
+    /** Called from UI to dismiss the generated image */
+    fun clearGeneratedImage() {
+        _state.update { it.copy(generatedImage = null) }
+    }
+
+    /**
+     * Parse Llama's response to extract the spoken text and optional image prompt.
+     * Llama appends [IMAGE: prompt] at the end when a picture would help.
+     */
+    private fun parseImageTag(raw: String): Pair<String, String?> {
+        val regex = Regex("""\[IMAGE:\s*(.+?)]""", RegexOption.IGNORE_CASE)
+        val match = regex.find(raw)
+        return if (match != null) {
+            val imagePrompt = match.groupValues[1].trim()
+            val spokenText = raw.substring(0, match.range.first).trim()
+            Pair(spokenText, imagePrompt)
+        } else {
+            Pair(raw.trim(), null)
+        }
     }
 
     override fun onCleared() {
